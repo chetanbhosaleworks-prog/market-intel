@@ -1,1 +1,42 @@
+name: Nightly Market Data
 
+on:
+  schedule:
+    - cron: "30 14 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      backfill_days:
+        description: "Backfill N calendar days (0 = normal daily run)"
+        default: "0"
+
+permissions:
+  contents: write
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run pipeline
+        run: |
+          if [ "${{ github.event.inputs.backfill_days || '0' }}" != "0" ]; then
+            python pipeline.py backfill ${{ github.event.inputs.backfill_days }}
+          else
+            python pipeline.py daily
+          fi
+
+      - name: Commit updated data
+        run: |
+          git config user.name "market-bot"
+          git config user.email "actions@github.com"
+          git add data/
+          git diff --cached --quiet || git commit -m "data: $(date -u +%F)"
+          git push
