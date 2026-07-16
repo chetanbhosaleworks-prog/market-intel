@@ -166,6 +166,7 @@ display:inline-flex;align-items:center;gap:7px;background:hsl(var(--card));color
   <div id="tright">
     <div class="searchWrap"><i data-lucide="search" class="ic"></i>
       <input id="search" placeholder="Search stocks…" autocomplete="off"><div class="sugg" id="sugg"></div></div>
+    <button class="iconbtn" onclick="go('portfolio')" title="Portfolio"><i data-lucide="briefcase" class="ic"></i></button>
     <button class="iconbtn" onclick="go('watch')" title="Watchlist"><i data-lucide="star" class="ic"></i><span class="dot" id="wdot" style="display:none"></span></button>
     <div style="position:relative">
       <button id="avatar" onclick="toggleMenu(event)">C</button>
@@ -183,7 +184,7 @@ display:inline-flex;align-items:center;gap:7px;background:hsl(var(--card));color
 <div id="disc">Data: NSE official EOD files · updates automatically · Educational research tool — <b>not investment advice</b>.</div>
 
 <script>
-var MARKET=null,SCANS=null,SYMBOLS=[],META=null,INDICES=[],NEWS=null;
+var MARKET=null,SCANS=null,SYMBOLS=[],META=null,INDICES=[],NEWS=null,SECTORS=[],FII=null;
 var charts={},tab='home',curStock=null,curScan=null,chartRange='1Y';
 var NAV=[['home','home','Home'],['market','activity','Market Overview'],['stock','line-chart','Stock Page'],
 ['scanner','scan-search','Scanner'],['news','newspaper','News']];
@@ -230,15 +231,87 @@ function stockRows(rows,cols){
 function idxCards(){
  if(!INDICES.length)return '<div class="card mut" style="font-size:12.5px">Index history is building — cards appear after two trading days of data.</div>';
  return '<div class="kgrid">'+INDICES.map(function(i){
-  return '<div class="idxcard"><div class="n">'+i.label+'</div><div class="v">'+fmtN(i.close)+'</div>'
-   +'<div class="c '+chgCls(i.chg)+'">'+(i.chg>0?'+':'')+fmtN(i.chg)+' ('+chgTxt(i.chg_pct)+')</div>'
-   +spark(i.spark,i.chg>=0?tk('--positive'):tk('--negative'))+'</div>';}).join('')+'</div>';
+  var vix=i.label==='INDIA VIX';
+  var cls=vix?(i.chg>0?'neg':'pos'):chgCls(i.chg);
+  var sc=vix?(i.chg>=0?tk('--negative'):tk('--positive')):(i.chg>=0?tk('--positive'):tk('--negative'));
+  return '<div class="idxcard"><div class="n">'+i.label+(vix?' · fear gauge':'')+'</div><div class="v">'+fmtN(i.close)+'</div>'
+   +'<div class="c '+cls+'">'+(i.chg>0?'+':'')+fmtN(i.chg)+' ('+chgTxt(i.chg_pct)+')</div>'
+   +spark(i.spark,sc)+'</div>';}).join('')+'</div>';
 }
 function newsList(items,limit){
  if(!items||!items.length)return '<div class="mut" style="font-size:12.5px;padding:6px">News refresh runs on trading days — check back shortly.</div>';
  return items.slice(0,limit||40).map(function(n){
   return '<div class="newsItem"><div class="nsrc">'+n.src+'</div><div><a class="nt" href="'+n.link+'" target="_blank" rel="noopener">'+n.title+'</a>'
    +'<div class="ntime">'+timeAgo(n.ts)+'</div></div></div>';}).join('');
+}
+
+function heatTile(sc){
+ var v=sc.chg_pct,a=Math.min(Math.abs(v)/2.5,1)*.55+.12;
+ var bg=v>=0?'hsla('+cssTok('--positive').split(/\s+/).join(',')+','+a+')':'hsla('+cssTok('--negative').split(/\s+/).join(',')+','+a+')';
+ return '<div style="background:'+bg+';border-radius:10px;padding:11px 12px;border:1px solid hsl(var(--border))">'
+  +'<div style="font-size:10px;font-weight:900;letter-spacing:.06em;color:hsl(var(--foreground)/.85)">'+sc.label+'</div>'
+  +'<div style="font-size:15px;font-weight:900;margin-top:3px" class="'+chgCls(v)+'">'+chgTxt(v)+'</div>'
+  +(sc.wk_pct!=null?'<div style="font-size:10px;margin-top:2px" class="mut">1W '+chgTxt(sc.wk_pct)+'</div>':'')+'</div>';
+}
+function sectorHeatmap(){
+ if(!SECTORS.length)return card('Sector Heatmap','<div class="mut" style="font-size:12.5px;padding:6px">Sector history is building — appears after two trading days.</div>');
+ return card('Sector Heatmap','<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(118px,1fr));gap:9px">'
+  +SECTORS.map(heatTile).join('')+'</div>','1-day change · sorted best to worst');
+}
+function fiiCard(){
+ if(!FII||!FII.series||FII.series.length<2)return card('FII Index Futures — Long vs Short','<div class="mut" style="font-size:12.5px;padding:6px">Participant OI history is building — chart appears after the next daily runs.</div>');
+ var f=FII.latest.fii||{};
+ var kpis='<div class="kgrid" style="margin-bottom:12px">'
+  +'<div class="idxcard"><div class="n">FII Long</div><div class="v pos">'+fmtN(f.long)+'</div><div class="c mut">index futures contracts</div></div>'
+  +'<div class="idxcard"><div class="n">FII Short</div><div class="v neg">'+fmtN(f.short)+'</div><div class="c mut">index futures contracts</div></div>'
+  +'<div class="idxcard"><div class="n">Net Position</div><div class="v '+chgCls(f.net)+'">'+(f.net>0?'+':'')+fmtN(f.net)+'</div><div class="c mut">long minus short</div></div>'
+  +'<div class="idxcard"><div class="n">Long %</div><div class="v">'+(f.long_pct!=null?f.long_pct+'%':'—')+'</div><div class="c mut">'+(f.long_pct>=55?'net bullish positioning':f.long_pct<=45?'net bearish positioning':'balanced positioning')+'</div></div>'
+  +'</div>';
+ return kpis+card('FII Net Position — index futures, last '+FII.series.length+' sessions','<div class="chartbox"><canvas id="chF"></canvas></div>','net contracts (long − short) · as of '+FII.asof);
+}
+function drawFii(){
+ if(!FII||!FII.series||FII.series.length<2||!document.getElementById('chF'))return;
+ var dd=FII.series.map(function(p){return p.d}),nn=FII.series.map(function(p){return p.net});
+ mkChart('chF',{type:'bar',data:{labels:dd,datasets:[{data:nn,
+  backgroundColor:nn.map(function(v){return v>=0?tka('--positive',.7):tka('--negative',.7)}),borderRadius:2}]},
+  options:{maintainAspectRatio:false,plugins:{legend:{display:false}},
+  scales:{y:{ticks:{font:{size:9},callback:function(v){return Math.abs(v)>=1e5?(v/1e5).toFixed(1)+'L':fmtN(v)}},grid:{color:tka('--border',.5)}},
+  x:{ticks:{font:{size:9},maxTicksLimit:10},grid:{display:false}}}}});
+}
+function getPort(){try{return JSON.parse(localStorage.getItem('pf')||'[]')}catch(e){return[]}}
+function setPort(a){localStorage.setItem('pf',JSON.stringify(a));}
+function addPos(){var sym=document.getElementById('pSym').value.trim().toUpperCase(),
+ qty=parseFloat(document.getElementById('pQty').value),avg=parseFloat(document.getElementById('pAvg').value);
+ if(!sym||!(qty>0)||!(avg>0)){alert('Fill symbol, quantity and buy price');return;}
+ if(SYMBOLS.indexOf(sym)<0){alert(sym+' not found');return;}
+ var p=getPort(),ex=p.find(function(r){return r.sym===sym});
+ if(ex){var tq=ex.qty+qty;ex.avg=+(((ex.avg*ex.qty)+(avg*qty))/tq).toFixed(2);ex.qty=tq;}
+ else p.push({sym:sym,qty:qty,avg:avg});
+ setPort(p);render();}
+function rmPos(sym){setPort(getPort().filter(function(r){return r.sym!==sym}));render();}
+function loadPortRows(pf){
+ Promise.all(pf.map(function(r){return fetch('data/stocks/'+r.sym+'.json').then(function(x){return x.ok?x.json():null}).catch(function(){return null})}))
+ .then(function(all){
+  var inv=0,cur=0,day=0;
+  var h='<div style="overflow-x:auto"><table><tr><th>Symbol</th><th class="num">Qty</th><th class="num">Avg ₹</th><th class="num">LTP</th><th class="num">Invested</th><th class="num">Current</th><th class="num">P&L</th><th class="num">P&L%</th><th class="num">Day</th><th></th></tr>';
+  pf.forEach(function(r,i){var s=all[i];
+   if(!s){h+='<tr><td class="sym">'+r.sym+'</td><td colspan="9" class="mut">no data</td></tr>';return;}
+   var ltp=s.ind.close,iv=r.qty*r.avg,cv=r.qty*ltp,pl=cv-iv,plp=iv?100*pl/iv:0,dy=cv*s.ind.chg_pct/100;
+   inv+=iv;cur+=cv;day+=dy;
+   h+='<tr class="click" onclick="openStock(\''+r.sym+'\')"><td class="sym">'+r.sym+'</td>'
+    +'<td class="num">'+fmtN(r.qty)+'</td><td class="num">'+fmtN(r.avg)+'</td><td class="num">₹'+fmtN(ltp)+'</td>'
+    +'<td class="num">₹'+fmtN(Math.round(iv))+'</td><td class="num">₹'+fmtN(Math.round(cv))+'</td>'
+    +'<td class="num '+chgCls(pl)+'">'+(pl>=0?'+':'')+'₹'+fmtN(Math.round(pl))+'</td>'
+    +'<td class="num '+chgCls(pl)+'">'+chgTxt(plp)+'</td>'
+    +'<td class="num '+chgCls(dy)+'">'+(dy>=0?'+':'')+'₹'+fmtN(Math.round(dy))+'</td>'
+    +'<td><button class="pill" onclick="event.stopPropagation();rmPos(\''+r.sym+'\')" style="padding:3px 9px">'+icon('x','ic-sm')+'</button></td></tr>';});
+  var tpl=cur-inv;
+  h+='<tr style="font-weight:900"><td>TOTAL</td><td></td><td></td><td></td><td class="num">₹'+fmtN(Math.round(inv))+'</td>'
+   +'<td class="num">₹'+fmtN(Math.round(cur))+'</td><td class="num '+chgCls(tpl)+'">'+(tpl>=0?'+':'')+'₹'+fmtN(Math.round(tpl))+'</td>'
+   +'<td class="num '+chgCls(tpl)+'">'+(inv?chgTxt(100*tpl/inv):'—')+'</td>'
+   +'<td class="num '+chgCls(day)+'">'+(day>=0?'+':'')+'₹'+fmtN(Math.round(day))+'</td><td></td></tr>';
+  document.getElementById('pfRows').innerHTML=h+'</table></div>';refreshIcons();
+ });
 }
 
 // ------------------------------------------------ render
@@ -272,8 +345,11 @@ function render(){
    +'</div>'
    +'<div class="row2">'+card('Top Gainers',stockRows(m.top_gainers,{m:1}))+card('Top Losers',stockRows(m.top_losers,{m:1}))+'</div>'
    +'<div class="row2">'+card('Unusual Volume — vs 20-day average',stockRows(m.most_active_volx,{volx:1}))
-   +card('Highest Delivery % — conviction buying',stockRows(m.highest_delivery,{dlv:1}))+'</div></div>';
+   +card('Highest Delivery % — conviction buying',stockRows(m.highest_delivery,{dlv:1}))+'</div>'
+   +sectorHeatmap()
+   +fiiCard()+'</div>';
   c.innerHTML=h;
+  drawFii();
  }
 
  else if(tab==='stock'){
@@ -380,6 +456,20 @@ function render(){
   c.innerHTML=h;
  }
 
+ else if(tab==='portfolio'){
+  var pf=getPort();
+  h+='<div class="wrap">'+card('My Portfolio',
+   '<div style="display:flex;gap:9px;margin-bottom:14px;flex-wrap:wrap">'
+   +'<input id="pSym" placeholder="Symbol" style="background:hsl(var(--secondary));border:1px solid hsl(var(--input));color:hsl(var(--foreground));border-radius:10px;padding:8px 13px;font-weight:700;font-family:Lato;outline:none;width:130px">'
+   +'<input id="pQty" placeholder="Qty" type="number" style="background:hsl(var(--secondary));border:1px solid hsl(var(--input));color:hsl(var(--foreground));border-radius:10px;padding:8px 13px;font-weight:700;font-family:Lato;outline:none;width:90px">'
+   +'<input id="pAvg" placeholder="Buy price ₹" type="number" style="background:hsl(var(--secondary));border:1px solid hsl(var(--input));color:hsl(var(--foreground));border-radius:10px;padding:8px 13px;font-weight:700;font-family:Lato;outline:none;width:110px">'
+   +'<button class="pill" onclick="addPos()">'+icon('plus','ic-sm')+'Add holding</button></div>'
+   +'<div id="pfRows" class="mut">'+(pf.length?'Loading…':'Empty — add your holdings above. Saved only in this browser; prices are EOD.')+'</div>',
+   pf.length+' holdings · EOD valuation · stored in this browser only')+'</div>';
+  c.innerHTML=h;
+  if(pf.length)loadPortRows(pf);
+ }
+
  else if(tab==='watch'){
   var wl=getWatch();
   h+='<div class="wrap">'+card('My Watchlist',
@@ -449,9 +539,9 @@ function suggPick(s,inputId,suggId){
 // ------------------------------------------------ boot
 function j(p){return fetch(p).then(function(r){return r.ok?r.json():null}).catch(function(){return null});}
 Promise.all([j('data/market.json'),j('data/scans.json'),j('data/symbols.json'),j('data/meta.json'),
-             j('data/indices.json'),j('data/news.json')])
+             j('data/indices.json'),j('data/news.json'),j('data/sectors.json'),j('data/fii.json')])
 .then(function(res){
- MARKET=res[0];SCANS=res[1];SYMBOLS=res[2]||[];META=res[3];INDICES=res[4]||[];NEWS=res[5];
+ MARKET=res[0];SCANS=res[1];SYMBOLS=res[2]||[];META=res[3];INDICES=res[4]||[];NEWS=res[5];SECTORS=res[6]||[];FII=res[7];
  if(!MARKET||!META)throw 0;
  curScan=SCANS.scans.length?SCANS.scans[0].id:null;
  document.getElementById('loader').style.display='none';
