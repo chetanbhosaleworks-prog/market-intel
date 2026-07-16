@@ -2,22 +2,17 @@ name: Nightly Market Data
 
 on:
   schedule:
-    - cron: "30 14 * * 1-5"        # 8:00 PM IST — Full daily pipeline
-    - cron: "45 4,7,10 * * 1-5"    # 10:15 AM / 1:15 PM / 4:15 PM IST — News refresh
-
+    - cron: "30 14 * * 1-5"        # 8:00 PM IST — full daily pipeline
+    - cron: "45 4,7,10 * * 1-5"    # 10:15 AM / 1:15 PM / 4:15 PM IST — news refresh
   workflow_dispatch:
     inputs:
       mode:
         description: "Run mode"
         type: choice
-        options:
-          - daily
-          - news
-          - backfill
+        options: [daily, news, backfill]
         default: daily
-
       backfill_days:
-        description: "Backfill days (backfill mode only)"
+        description: "Days (backfill mode only)"
         default: "460"
 
 permissions:
@@ -26,7 +21,6 @@ permissions:
 jobs:
   run:
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
 
@@ -40,19 +34,12 @@ jobs:
       - name: Run pipeline
         run: |
           MODE="${{ github.event.inputs.mode }}"
-
           if [ -z "$MODE" ]; then
-            if [ "${{ github.event.schedule }}" = "45 4,7,10 * * 1-5" ]; then
-              MODE=news
-            else
-              MODE=daily
-            fi
+            if [ "${{ github.event.schedule }}" = "45 4,7,10 * * 1-5" ]; then MODE=news; else MODE=daily; fi
           fi
-
-          echo "Running mode: $MODE"
-
+          echo "mode: $MODE"
           if [ "$MODE" = "backfill" ]; then
-            python pipeline.py backfill ${{ github.event.inputs.backfill_days }}
+            python pipeline.py backfill ${{ github.event.inputs.backfill_days || '460' }}
           elif [ "$MODE" = "news" ]; then
             python pipeline.py news
           else
@@ -63,11 +50,6 @@ jobs:
         run: |
           git config user.name "market-bot"
           git config user.email "actions@github.com"
-
           git add data/
-
-          git diff --cached --quiet || \
-          git commit -m "data: $(date -u '+%F %H:%M')"
-
+          git diff --cached --quiet || git commit -m "data: $(date -u '+%F %H:%M')"
           git push
-          Update GitHub workflow
