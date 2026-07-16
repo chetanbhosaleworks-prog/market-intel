@@ -235,7 +235,16 @@ def narrative(sym: str, x: dict) -> str:
 IDX_URL = "https://nsearchives.nseindia.com/content/indices/ind_close_all_{d}.csv"
 IDX_WANT = {"Nifty 50": "NIFTY 50", "Nifty Bank": "BANK NIFTY",
             "Nifty Financial Services": "FIN NIFTY",
-            "Nifty Midcap Select": "MIDCAP SELECT", "Nifty 500": "NIFTY 500"}
+            "Nifty Midcap Select": "MIDCAP SELECT", "Nifty 500": "NIFTY 500",
+            "India VIX": "INDIA VIX"}
+SECT_WANT = {"Nifty IT": "IT", "Nifty Pharma": "PHARMA", "Nifty Auto": "AUTO",
+             "Nifty Bank": "BANK", "Nifty FMCG": "FMCG", "Nifty Metal": "METAL",
+             "Nifty Realty": "REALTY", "Nifty Energy": "ENERGY",
+             "Nifty PSU Bank": "PSU BANK", "Nifty Media": "MEDIA",
+             "Nifty Private Bank": "PVT BANK", "Nifty Consumer Durables": "CONS DUR",
+             "Nifty Oil & Gas": "OIL & GAS", "Nifty Healthcare Index": "HEALTHCARE",
+             "Nifty Infrastructure": "INFRA"}
+SECT_HIST = os.path.join(ROOT, "data", "history_sect")
 IDX_HIST = os.path.join(ROOT, "data", "history_idx")
 
 def fetch_indices(d: date) -> pd.DataFrame | None:
@@ -269,31 +278,42 @@ def fetch_indices(d: date) -> pd.DataFrame | None:
     close_c = next((c for c in df.columns if c.lower().startswith("closing")), None)
     if not name_c or not close_c:
         return None
-    df = df[df[name_c].isin(IDX_WANT.keys())].copy()
+    keep = set(IDX_WANT.keys()) | set(SECT_WANT.keys())
+    df = df[df[name_c].isin(keep)].copy()
     df["DATE"] = d.isoformat()
     return df[[name_c, close_c, "DATE"]].rename(columns={name_c: "NAME", close_c: "CLOSE"})
 
 def append_indices(day_df: pd.DataFrame):
     os.makedirs(IDX_HIST, exist_ok=True)
+    os.makedirs(SECT_HIST, exist_ok=True)
     for _, r in day_df.iterrows():
-        key = IDX_WANT.get(r["NAME"], r["NAME"]).replace(" ", "_")
-        p = os.path.join(IDX_HIST, key + ".csv")
-        row = pd.DataFrame([{"DATE": r["DATE"], "CLOSE": float(r["CLOSE"])}])
-        if os.path.exists(p):
-            h = pd.read_csv(p)
-            if r["DATE"] in set(h["DATE"]):
-                continue
-            h = pd.concat([h, row], ignore_index=True)
-        else:
-            h = row
-        h.sort_values("DATE").tail(80).to_csv(p, index=False)
+        targets = []
+        if r["NAME"] in IDX_WANT:
+            targets.append((IDX_HIST, IDX_WANT[r["NAME"]]))
+        if r["NAME"] in SECT_WANT:
+            targets.append((SECT_HIST, SECT_WANT[r["NAME"]]))
+        for hist_dir, label in targets:
+            _append_one_index(hist_dir, label, r)
+
+def _append_one_index(hist_dir, label, r):
+    key = label.replace(" ", "_").replace("&", "and")
+    p = os.path.join(hist_dir, key + ".csv")
+    row = pd.DataFrame([{"DATE": r["DATE"], "CLOSE": float(r["CLOSE"])}])
+    if os.path.exists(p):
+        h = pd.read_csv(p)
+        if r["DATE"] in set(h["DATE"]):
+            return
+        h = pd.concat([h, row], ignore_index=True)
+    else:
+        h = row
+    h.sort_values("DATE").tail(80).to_csv(p, index=False)
 
 def build_indices_json():
     out = []
     if not os.path.isdir(IDX_HIST):
         return
     for name, label in IDX_WANT.items():
-        p = os.path.join(IDX_HIST, label.replace(" ", "_") + ".csv")
+        p = os.path.join(IDX_HIST, label.replace(" ", "_").replace("&", "and") + ".csv")
         if not os.path.exists(p):
             continue
         h = pd.read_csv(p)
@@ -306,6 +326,105 @@ def build_indices_json():
                     "asof": h["DATE"].iloc[-1]})
     with open(os.path.join(DATA_DIR, "indices.json"), "w") as fh:
         json.dump(out, fh, separators=(",", ":"))
+
+def build_sectors_json():
+    out = []
+    if not os.path.isdir(SECT_HIST):
+        return
+    for name, label in SECT_WANT.items():
+        p = os.path.join(SECT_HIST, label.replace(" ", "_").replace("&", "and") + ".csv")
+        if not os.path.exists(p):
+            continue
+        h = pd.read_csv(p)
+        if len(h) < 2:
+            continue
+        c, pv = float(h["CLOSE"].iloc[-1]), float(h["CLOSE"].iloc[-2])
+        w = h["CLOSE"].tail(6)
+        wk = round((c / float(w.iloc[0]) - 1) * 100, 2) if len(w) >= 6 else None
+        out.append({"label": label, "close": round(c, 2),
+                    "chg_pct": round((c / pv - 1) * 100, 2), "wk_pct": wk,
+                    "asof": h["DATE"].iloc[-1]})
+    out.sort(key=lambda r: -r["chg_pct"])
+    with open(os.path.join(DATA_DIR, "sectors.json"), "w") as fh:
+        json.dump(out, fh, separators=(",", ":"))
+
+# ---------------------------------------------------------------- FII / participant-wise F&O OI
+FII_URL = "https://nsearchives.nseindia.com/content/nsccl/fao_participant_oi_{d}.csv"
+FII_HIST = os.path.join(ROOT, "data", "history_fii")
+FII_FILE = os.path.join(FII_HIST, "participant_oi.csv")
+
+def fetch_fii(d: date) -> pd.DataFrame | None:
+    tag = d.strftime("%d%m%Y")
+    mock_dir = os.environ.get("NSE_MOCK_DIR")
+    if mock_dir:
+        p = os.path.join(mock_dir, f"fao_participant_oi_{tag}.csv")
+        if not os.path.exists(p):
+            return None
+        raw = open(p, "rb").read()
+    else:
+        for attempt in range(3):
+            try:
+                r = requests.get(FII_URL.format(d=tag), headers=UA, timeout=30)
+                if r.status_code == 200 and len(r.content) > 300:
+                    raw = r.content
+                    break
+                if r.status_code == 404:
+                    return None
+            except requests.RequestException:
+                pass
+            time.sleep(2 * (attempt + 1))
+        else:
+            return None
+    for skip in (0, 1):
+        try:
+            df = pd.read_csv(io.BytesIO(raw), skiprows=skip)
+            df.columns = [str(c).strip() for c in df.columns]
+            ct = next((c for c in df.columns if c.lower().startswith("client type")), None)
+            fl = next((c for c in df.columns if c.lower().startswith("future index long")), None)
+            fs = next((c for c in df.columns if c.lower().startswith("future index short")), None)
+            if ct and fl and fs:
+                df[ct] = df[ct].astype(str).str.strip()
+                df = df[df[ct].isin(["FII", "DII", "Client", "Pro"])]
+                out = df[[ct, fl, fs]].rename(columns={ct: "WHO", fl: "LONG", fs: "SHORT"})
+                out["LONG"] = pd.to_numeric(out["LONG"], errors="coerce")
+                out["SHORT"] = pd.to_numeric(out["SHORT"], errors="coerce")
+                out["DATE"] = d.isoformat()
+                return out.dropna()
+        except Exception:
+            continue
+    return None
+
+def append_fii(day_df: pd.DataFrame):
+    os.makedirs(FII_HIST, exist_ok=True)
+    if os.path.exists(FII_FILE):
+        h = pd.read_csv(FII_FILE)
+        if day_df["DATE"].iloc[0] in set(h["DATE"]):
+            return
+        h = pd.concat([h, day_df], ignore_index=True)
+    else:
+        h = day_df
+    h.sort_values("DATE").tail(4 * 260).to_csv(FII_FILE, index=False)
+
+def build_fii_json():
+    if not os.path.exists(FII_FILE):
+        return
+    h = pd.read_csv(FII_FILE)
+    if not len(h):
+        return
+    latest_d = h["DATE"].max()
+    latest = {}
+    for who in ["FII", "DII", "Client", "Pro"]:
+        r = h[(h["DATE"] == latest_d) & (h["WHO"] == who)]
+        if len(r):
+            L, S = int(r["LONG"].iloc[0]), int(r["SHORT"].iloc[0])
+            latest[who.lower()] = {"long": L, "short": S, "net": L - S,
+                                   "long_pct": round(100 * L / (L + S), 1) if L + S else None}
+    fii = h[h["WHO"] == "FII"].sort_values("DATE").tail(130)
+    series = [{"d": r["DATE"], "net": int(r["LONG"] - r["SHORT"]),
+               "lp": round(100 * r["LONG"] / (r["LONG"] + r["SHORT"]), 1) if r["LONG"] + r["SHORT"] else None}
+              for _, r in fii.iterrows()]
+    with open(os.path.join(DATA_DIR, "fii.json"), "w") as fh:
+        json.dump({"asof": latest_d, "latest": latest, "series": series}, fh, separators=(",", ":"))
 
 # ---------------------------------------------------------------- news (RSS, fetched by Actions)
 FEEDS = [
@@ -439,13 +558,16 @@ def run_daily():
             idx = fetch_indices(d)
             if idx is not None:
                 append_indices(idx)
+            fo = fetch_fii(d)
+            if fo is not None:
+                append_fii(fo)
             print(f"fetched {d} rows={len(df)} new_history_rows={n}")
             break
         d -= timedelta(days=1)
     else:
         print("no trading day found in the last 7 days — nothing to do")
-    # seed index history on first runs (needs 2+ days for change calc)
-    probe = os.path.join(IDX_HIST, "NIFTY_50.csv")
+    # seed index/sector history on first runs (needs 2+ days for change calc)
+    probe = os.path.join(SECT_HIST, "IT.csv")
     if not os.path.exists(probe) or len(pd.read_csv(probe)) < 2:
         for i in range(12, 0, -1):
             dd = date.today() - timedelta(days=i)
@@ -456,7 +578,20 @@ def run_daily():
                 append_indices(idx2)
             if not os.environ.get("NSE_MOCK_DIR"):
                 time.sleep(0.5)
+    # seed FII participant history for the long-short chart
+    if not os.path.exists(FII_FILE) or len(pd.read_csv(FII_FILE)) < 20:
+        for i in range(130, 0, -1):
+            dd = date.today() - timedelta(days=i)
+            if dd.weekday() >= 5:
+                continue
+            fo2 = fetch_fii(dd)
+            if fo2 is not None:
+                append_fii(fo2)
+            if not os.environ.get("NSE_MOCK_DIR"):
+                time.sleep(0.4)
     build_indices_json()
+    build_sectors_json()
+    build_fii_json()
     fetch_news()
     n, asof = rebuild_outputs()
     print(f"outputs rebuilt: {n} stocks, as of {asof}")
@@ -475,6 +610,9 @@ def run_backfill(days: int):
         idx = fetch_indices(d)
         if idx is not None:
             append_indices(idx)
+        fo = fetch_fii(d)
+        if fo is not None:
+            append_fii(fo)
         got += 1
         if got % 20 == 0:
             print(f"...{got} trading days ingested (latest {d})")
@@ -482,6 +620,8 @@ def run_backfill(days: int):
             time.sleep(0.6)                 # be polite to NSE
     print(f"backfill complete: {got} trading days")
     build_indices_json()
+    build_sectors_json()
+    build_fii_json()
     fetch_news()
     n, asof = rebuild_outputs()
     print(f"outputs rebuilt: {n} stocks, as of {asof}")
