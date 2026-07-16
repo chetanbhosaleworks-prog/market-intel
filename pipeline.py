@@ -70,7 +70,10 @@ def fetch_day(d: date) -> pd.DataFrame | None:
         else:
             return None
 
-    df = pd.read_csv(io.BytesIO(raw))
+    try:
+        df = pd.read_csv(io.BytesIO(raw))
+    except Exception:
+        return None
     df.columns = [c.strip() for c in df.columns]
     # normalise expected columns
     need = ["SYMBOL", "SERIES", "OPEN_PRICE", "HIGH_PRICE", "LOW_PRICE",
