@@ -70,10 +70,7 @@ def fetch_day(d: date) -> pd.DataFrame | None:
         else:
             return None
 
-    try:
-        df = pd.read_csv(io.BytesIO(raw))
-    except Exception:
-        return None
+    df = pd.read_csv(io.BytesIO(raw))
     df.columns = [c.strip() for c in df.columns]
     # normalise expected columns
     need = ["SYMBOL", "SERIES", "OPEN_PRICE", "HIGH_PRICE", "LOW_PRICE",
@@ -232,6 +229,129 @@ def narrative(sym: str, x: dict) -> str:
     return " ".join(s)
 
 
+
+
+# ---------------------------------------------------------------- indices (NSE official EOD)
+IDX_URL = "https://nsearchives.nseindia.com/content/indices/ind_close_all_{d}.csv"
+IDX_WANT = {"Nifty 50": "NIFTY 50", "Nifty Bank": "BANK NIFTY",
+            "Nifty Financial Services": "FIN NIFTY",
+            "Nifty Midcap Select": "MIDCAP SELECT", "Nifty 500": "NIFTY 500"}
+IDX_HIST = os.path.join(ROOT, "data", "history_idx")
+
+def fetch_indices(d: date) -> pd.DataFrame | None:
+    tag = d.strftime("%d%m%Y")
+    mock_dir = os.environ.get("NSE_MOCK_DIR")
+    if mock_dir:
+        p = os.path.join(mock_dir, f"ind_close_all_{tag}.csv")
+        if not os.path.exists(p):
+            return None
+        raw = open(p, "rb").read()
+    else:
+        for attempt in range(3):
+            try:
+                r = requests.get(IDX_URL.format(d=tag), headers=UA, timeout=30)
+                if r.status_code == 200 and len(r.content) > 500:
+                    raw = r.content
+                    break
+                if r.status_code == 404:
+                    return None
+            except requests.RequestException:
+                pass
+            time.sleep(2 * (attempt + 1))
+        else:
+            return None
+    try:
+        df = pd.read_csv(io.BytesIO(raw))
+    except Exception:
+        return None
+    df.columns = [c.strip() for c in df.columns]
+    name_c = next((c for c in df.columns if c.lower().startswith("index name")), None)
+    close_c = next((c for c in df.columns if c.lower().startswith("closing")), None)
+    if not name_c or not close_c:
+        return None
+    df = df[df[name_c].isin(IDX_WANT.keys())].copy()
+    df["DATE"] = d.isoformat()
+    return df[[name_c, close_c, "DATE"]].rename(columns={name_c: "NAME", close_c: "CLOSE"})
+
+def append_indices(day_df: pd.DataFrame):
+    os.makedirs(IDX_HIST, exist_ok=True)
+    for _, r in day_df.iterrows():
+        key = IDX_WANT.get(r["NAME"], r["NAME"]).replace(" ", "_")
+        p = os.path.join(IDX_HIST, key + ".csv")
+        row = pd.DataFrame([{"DATE": r["DATE"], "CLOSE": float(r["CLOSE"])}])
+        if os.path.exists(p):
+            h = pd.read_csv(p)
+            if r["DATE"] in set(h["DATE"]):
+                continue
+            h = pd.concat([h, row], ignore_index=True)
+        else:
+            h = row
+        h.sort_values("DATE").tail(80).to_csv(p, index=False)
+
+def build_indices_json():
+    out = []
+    if not os.path.isdir(IDX_HIST):
+        return
+    for name, label in IDX_WANT.items():
+        p = os.path.join(IDX_HIST, label.replace(" ", "_") + ".csv")
+        if not os.path.exists(p):
+            continue
+        h = pd.read_csv(p)
+        if len(h) < 2:
+            continue
+        c, pv = float(h["CLOSE"].iloc[-1]), float(h["CLOSE"].iloc[-2])
+        out.append({"label": label, "close": round(c, 2),
+                    "chg": round(c - pv, 2), "chg_pct": round((c / pv - 1) * 100, 2),
+                    "spark": [round(x, 1) for x in h["CLOSE"].tail(30).tolist()],
+                    "asof": h["DATE"].iloc[-1]})
+    with open(os.path.join(DATA_DIR, "indices.json"), "w") as fh:
+        json.dump(out, fh, separators=(",", ":"))
+
+# ---------------------------------------------------------------- news (RSS, fetched by Actions)
+FEEDS = [
+    ("ET Markets", "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms"),
+    ("Moneycontrol", "https://www.moneycontrol.com/rss/marketreports.xml"),
+    ("Livemint", "https://www.livemint.com/rss/markets"),
+]
+
+def fetch_news():
+    import xml.etree.ElementTree as ET
+    import html as html_mod
+    from email.utils import parsedate_to_datetime
+    items = []
+    mock_dir = os.environ.get("NEWS_MOCK_DIR")
+    sources = ([("Mock", os.path.join(mock_dir, f)) for f in sorted(os.listdir(mock_dir))]
+               if mock_dir else FEEDS)
+    for src, loc in sources:
+        try:
+            raw = open(loc, "rb").read() if mock_dir else requests.get(loc, headers=UA, timeout=25).content
+            root = ET.fromstring(raw)
+            for it in root.iter("item"):
+                t = (it.findtext("title") or "").strip()
+                lk = (it.findtext("link") or "").strip()
+                pub = (it.findtext("pubDate") or "").strip()
+                if not t or not lk:
+                    continue
+                try:
+                    ts = parsedate_to_datetime(pub).isoformat()
+                except Exception:
+                    ts = ""
+                items.append({"title": html_mod.unescape(t)[:200], "link": lk,
+                              "src": src, "ts": ts})
+        except Exception as e:
+            print(f"news feed skipped ({src}): {type(e).__name__}")
+    seen, out = set(), []
+    for it in sorted(items, key=lambda x: x["ts"], reverse=True):
+        k = it["title"].lower()[:80]
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(it)
+    with open(os.path.join(DATA_DIR, "news.json"), "w") as fh:
+        json.dump({"updated_utc": datetime.utcnow().isoformat() + "Z",
+                   "items": out[:40]}, fh, separators=(",", ":"))
+    print(f"news: {len(out[:40])} items from {len(sources)} feeds")
+
 # ---------------------------------------------------------------- scans + market
 SCAN_DEFS = {
     "above_200ema":   ("Trading above 200-day EMA",        lambda x: x.get("ema200") and x["close"] > x["ema200"]),
@@ -316,11 +436,28 @@ def run_daily():
         df = fetch_day(d)
         if df is not None and len(df):
             n = append_history(df)
+            idx = fetch_indices(d)
+            if idx is not None:
+                append_indices(idx)
             print(f"fetched {d} rows={len(df)} new_history_rows={n}")
             break
         d -= timedelta(days=1)
     else:
         print("no trading day found in the last 7 days — nothing to do")
+    # seed index history on first runs (needs 2+ days for change calc)
+    probe = os.path.join(IDX_HIST, "NIFTY_50.csv")
+    if not os.path.exists(probe) or len(pd.read_csv(probe)) < 2:
+        for i in range(12, 0, -1):
+            dd = date.today() - timedelta(days=i)
+            if dd.weekday() >= 5:
+                continue
+            idx2 = fetch_indices(dd)
+            if idx2 is not None:
+                append_indices(idx2)
+            if not os.environ.get("NSE_MOCK_DIR"):
+                time.sleep(0.5)
+    build_indices_json()
+    fetch_news()
     n, asof = rebuild_outputs()
     print(f"outputs rebuilt: {n} stocks, as of {asof}")
 
@@ -335,12 +472,17 @@ def run_backfill(days: int):
         if df is None:
             continue
         append_history(df)
+        idx = fetch_indices(d)
+        if idx is not None:
+            append_indices(idx)
         got += 1
         if got % 20 == 0:
             print(f"...{got} trading days ingested (latest {d})")
         if not os.environ.get("NSE_MOCK_DIR"):
             time.sleep(0.6)                 # be polite to NSE
     print(f"backfill complete: {got} trading days")
+    build_indices_json()
+    fetch_news()
     n, asof = rebuild_outputs()
     print(f"outputs rebuilt: {n} stocks, as of {asof}")
 
@@ -349,5 +491,7 @@ if __name__ == "__main__":
     mode = sys.argv[1] if len(sys.argv) > 1 else "daily"
     if mode == "backfill":
         run_backfill(int(sys.argv[2]) if len(sys.argv) > 2 else 320)
+    elif mode == "news":
+        fetch_news()
     else:
         run_daily()
