@@ -278,10 +278,17 @@ def fetch_indices(d: date) -> pd.DataFrame | None:
     close_c = next((c for c in df.columns if c.lower().startswith("closing")), None)
     if not name_c or not close_c:
         return None
-    keep = set(IDX_WANT.keys()) | set(SECT_WANT.keys())
-    df = df[df[name_c].isin(keep)].copy()
+    def norm(x):
+        return " ".join(str(x).strip().lower().split())
+    lut = {}
+    for k in list(IDX_WANT.keys()) + list(SECT_WANT.keys()):
+        lut[norm(k)] = k
+    df["_N"] = df[name_c].map(lambda v: lut.get(norm(v)))
+    df = df[df["_N"].notna()].copy()
     df["DATE"] = d.isoformat()
-    return df[[name_c, close_c, "DATE"]].rename(columns={name_c: "NAME", close_c: "CLOSE"})
+    df = df[["_N", close_c, "DATE"]].rename(columns={"_N": "NAME", close_c: "CLOSE"})
+    df["CLOSE"] = pd.to_numeric(df["CLOSE"], errors="coerce")
+    return df.dropna(subset=["CLOSE"])
 
 def append_indices(day_df: pd.DataFrame):
     os.makedirs(IDX_HIST, exist_ok=True)
