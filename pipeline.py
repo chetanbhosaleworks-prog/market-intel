@@ -471,7 +471,8 @@ def build_sectors_json():
         json.dump(out, fh, separators=(",", ":"))
 
 EQ_MASTER_URL = "https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv"
-N50_URL = "https://nsearchives.nseindia.com/content/indices/ind_nifty50list.csv"
+N50_URLS = ["https://nsearchives.nseindia.com/content/indices/ind_nifty50list.csv",
+            "https://niftyindices.com/IndexConstituent/ind_nifty50list.csv"]
 
 def _fetch_csv(url, mock_name):
     mock_dir = os.environ.get("NSE_MOCK_DIR")
@@ -512,7 +513,11 @@ def build_names_json():
         print(f"names master skipped: {type(e).__name__}")
 
 def build_n50_map():
-    raw = _fetch_csv(N50_URL, "ind_nifty50list.csv")
+    raw = None
+    for u in N50_URLS:
+        raw = _fetch_csv(u, "ind_nifty50list.csv")
+        if raw is not None:
+            break
     syms = []
     if raw is not None:
         try:
