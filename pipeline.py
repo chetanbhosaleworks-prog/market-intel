@@ -187,6 +187,59 @@ def compute_indicators(hist: pd.DataFrame) -> dict | None:
     if len(dl) >= 21:
         out["deliv"] = round(float(dl.iloc[-1]), 1)
         out["deliv_avg20"] = round(float(dl.tail(21).head(20).mean()), 1)
+    # --- pattern & level flags (EOD, based on last bars) ---
+    o_, h_, l_, c_ = (hist["OPEN_PRICE"].values, hist["HIGH_PRICE"].values,
+                      hist["LOW_PRICE"].values, hist["CLOSE_PRICE"].values)
+    n = len(c_)
+    def body(i): return abs(c_[i] - o_[i])
+    def bull(i): return c_[i] > o_[i]
+    def bear(i): return c_[i] < o_[i]
+    pat = []
+    if n >= 2:
+        b1, b0 = body(-2), body(-1)
+        if bear(-2) and bull(-1) and o_[-1] <= c_[-2] and c_[-1] >= o_[-2] and b0 > b1:
+            pat.append("bull_engulf")
+        if bull(-2) and bear(-1) and o_[-1] >= c_[-2] and c_[-1] <= o_[-2] and b0 > b1:
+            pat.append("bear_engulf")
+        mid_prev = (o_[-2] + c_[-2]) / 2
+        if bear(-2) and bull(-1) and o_[-1] < c_[-2] and c_[-1] > mid_prev and c_[-1] < o_[-2]:
+            pat.append("piercing")
+        if bull(-2) and bear(-1) and o_[-1] > c_[-2] and c_[-1] < mid_prev and c_[-1] > o_[-2]:
+            pat.append("dark_cloud")
+    if n >= 6:
+        rng = h_[-1] - l_[-1]
+        bd = body(-1)
+        low_sh = min(o_[-1], c_[-1]) - l_[-1]
+        up_sh = h_[-1] - max(o_[-1], c_[-1])
+        if rng > 0 and bd > 0:
+            if low_sh >= 2 * bd and up_sh <= 0.5 * bd and l_[-1] <= min(l_[-6:-1]):
+                pat.append("hammer")
+            if up_sh >= 2 * bd and low_sh <= 0.5 * bd and h_[-1] >= max(h_[-6:-1]):
+                pat.append("shooting_star")
+    if n >= 4:
+        if all(bull(i) for i in (-3, -2, -1)) and c_[-1] > c_[-2] > c_[-3]            and o_[-1] > o_[-2] and o_[-2] > o_[-3]:
+            pat.append("three_soldiers")
+        if all(bear(i) for i in (-3, -2, -1)) and c_[-1] < c_[-2] < c_[-3]            and o_[-1] < o_[-2] and o_[-2] < o_[-3]:
+            pat.append("three_crows")
+    out["patterns"] = pat
+    if n >= 3:
+        pH, pL, pC = h_[-2], l_[-2], c_[-2]
+        P = (pH + pL + pC) / 3
+        lv = {"r1": 2 * P - pL, "r2": P + (pH - pL), "r3": pH + 2 * (P - pL),
+              "s1": 2 * P - pH, "s2": P - (pH - pL), "s3": pL - 2 * (pH - P)}
+        for k in ("r1", "r2", "r3"):
+            out["x_" + k] = bool(c_[-2] < lv[k] <= c_[-1] or (c_[-2] <= lv[k] < c_[-1]))
+        for k in ("s1", "s2", "s3"):
+            out["x_" + k] = bool(c_[-2] > lv[k] >= c_[-1] or (c_[-2] >= lv[k] > c_[-1]))
+    if n >= 8:
+        ranges = (h_ - l_)[-7:]
+        out["nr7"] = bool(ranges[-1] > 0 and ranges[-1] <= ranges.min())
+    if n >= 7:
+        out["wk1_hi"] = bool(h_[-1] >= max(h_[-6:-1]))
+        out["wk1_lo"] = bool(l_[-1] <= min(l_[-6:-1]))
+    if n >= 22:
+        out["wk4_hi"] = bool(h_[-1] >= max(h_[-21:-1]))
+        out["wk4_lo"] = bool(l_[-1] <= min(l_[-21:-1]))
     out["golden_cross"] = bool(
         "ema50" in out and "ema200" in out and len(c) >= 201 and
         float(ema(c, 50).iloc[-2]) <= float(ema(c, 200).iloc[-2]) and out["ema50"] > out["ema200"])
@@ -276,6 +329,8 @@ def fetch_indices(d: date) -> pd.DataFrame | None:
     df.columns = [c.strip() for c in df.columns]
     name_c = next((c for c in df.columns if c.lower().startswith("index name")), None)
     close_c = next((c for c in df.columns if c.lower().startswith("closing")), None)
+    pe_c = next((c for c in df.columns if c.strip().lower() in ("p/e", "pe")), None)
+    pb_c = next((c for c in df.columns if c.strip().lower() in ("p/b", "pb")), None)
     if not name_c or not close_c:
         return None
     def norm(x):
@@ -286,8 +341,16 @@ def fetch_indices(d: date) -> pd.DataFrame | None:
     df["_N"] = df[name_c].map(lambda v: lut.get(norm(v)))
     df = df[df["_N"].notna()].copy()
     df["DATE"] = d.isoformat()
-    df = df[["_N", close_c, "DATE"]].rename(columns={"_N": "NAME", close_c: "CLOSE"})
-    df["CLOSE"] = pd.to_numeric(df["CLOSE"], errors="coerce")
+    cols = {"_N": "NAME", close_c: "CLOSE"}
+    keep_c = ["_N", close_c, "DATE"]
+    if pe_c:
+        cols[pe_c] = "PE"; keep_c.insert(2, pe_c)
+    if pb_c:
+        cols[pb_c] = "PB"; keep_c.insert(3, pb_c)
+    df = df[keep_c].rename(columns=cols)
+    for cc in ("CLOSE", "PE", "PB"):
+        if cc in df.columns:
+            df[cc] = pd.to_numeric(df[cc], errors="coerce")
     return df.dropna(subset=["CLOSE"])
 
 def append_indices(day_df: pd.DataFrame):
@@ -333,6 +396,48 @@ def build_indices_json():
                     "asof": h["DATE"].iloc[-1]})
     with open(os.path.join(DATA_DIR, "indices.json"), "w") as fh:
         json.dump(out, fh, separators=(",", ":"))
+
+VAL_HIST = os.path.join(ROOT, "data", "history_val")
+VAL_WANT = {"Nifty 50": "NIFTY 50", "Nifty 500": "NIFTY 500"}
+
+def append_valuation(day_df: pd.DataFrame):
+    if "PE" not in day_df.columns:
+        return
+    os.makedirs(VAL_HIST, exist_ok=True)
+    for name, label in VAL_WANT.items():
+        r = day_df[day_df["NAME"] == name]
+        if not len(r) or pd.isna(r["PE"].iloc[0]):
+            continue
+        p = os.path.join(VAL_HIST, label.replace(" ", "_") + ".csv")
+        row = pd.DataFrame([{"DATE": r["DATE"].iloc[0], "PE": float(r["PE"].iloc[0]),
+                             "PB": float(r["PB"].iloc[0]) if "PB" in r.columns and not pd.isna(r["PB"].iloc[0]) else None}])
+        if os.path.exists(p):
+            h = pd.read_csv(p)
+            if row["DATE"].iloc[0] in set(h["DATE"]):
+                continue
+            h = pd.concat([h, row], ignore_index=True)
+        else:
+            h = row
+        h.sort_values("DATE").tail(90).to_csv(p, index=False)
+
+def build_valuation_json():
+    out = {}
+    if not os.path.isdir(VAL_HIST):
+        return
+    for name, label in VAL_WANT.items():
+        p = os.path.join(VAL_HIST, label.replace(" ", "_") + ".csv")
+        if not os.path.exists(p):
+            continue
+        h = pd.read_csv(p)
+        if not len(h):
+            continue
+        out[label] = {"pe": round(float(h["PE"].iloc[-1]), 2),
+                      "pb": round(float(h["PB"].iloc[-1]), 2) if "PB" in h.columns and not pd.isna(h["PB"].iloc[-1]) else None,
+                      "spark": [round(x, 2) for x in h["PE"].tail(30).tolist()],
+                      "asof": h["DATE"].iloc[-1]}
+    if out:
+        with open(os.path.join(DATA_DIR, "valuation.json"), "w") as fh:
+            json.dump(out, fh, separators=(",", ":"))
 
 def build_sectors_json():
     out = []
@@ -480,16 +585,44 @@ def fetch_news():
 
 # ---------------------------------------------------------------- scans + market
 SCAN_DEFS = {
-    "above_200ema":   ("Trading above 200-day EMA",        lambda x: x.get("ema200") and x["close"] > x["ema200"]),
-    "rsi_oversold":   ("RSI below 30 (oversold)",          lambda x: x.get("rsi") is not None and x["rsi"] < 30),
-    "rsi_overbought": ("RSI above 70 (overbought)",        lambda x: x.get("rsi") is not None and x["rsi"] > 70),
-    "st_flip_bull":   ("Supertrend flipped bullish today", lambda x: x.get("st_flip") and x["st_dir"] == 1),
-    "st_flip_bear":   ("Supertrend flipped bearish today", lambda x: x.get("st_flip") and x["st_dir"] == -1),
-    "vol_spike":      ("Volume 2x+ its 20-day average",    lambda x: x.get("vol_x") and x["vol_x"] >= 2),
-    "deliv_accum":    ("Rising delivery % + rising price", lambda x: x.get("deliv") and x.get("deliv_avg20")
+    # Trend & Momentum
+    "above_200ema":   ("Trading above 200-day EMA", "Trend", lambda x: x.get("ema200") and x["close"] > x["ema200"]),
+    "golden_cross":   ("Golden cross (50>200) today", "Trend", lambda x: x.get("golden_cross")),
+    "st_flip_bull":   ("Supertrend flipped bullish today", "Trend", lambda x: x.get("st_flip") and x["st_dir"] == 1),
+    "st_flip_bear":   ("Supertrend flipped bearish today", "Trend", lambda x: x.get("st_flip") and x["st_dir"] == -1),
+    "rsi_oversold":   ("RSI below 30 (oversold)", "Momentum", lambda x: x.get("rsi") is not None and x["rsi"] < 30),
+    "rsi_overbought": ("RSI above 70 (overbought)", "Momentum", lambda x: x.get("rsi") is not None and x["rsi"] > 70),
+    "macd_bull":      ("MACD above signal line", "Momentum", lambda x: x.get("macd") is not None and x["macd"] > x["macd_sig"]),
+    # Price & Volume
+    "vol_spike":      ("Volume 2x+ its 20-day average", "Price & Volume", lambda x: x.get("vol_x") and x["vol_x"] >= 2),
+    "deliv_accum":    ("Rising delivery % + rising price", "Price & Volume", lambda x: x.get("deliv") and x.get("deliv_avg20")
                                                             and x["deliv"] > x["deliv_avg20"] + 5 and x["chg_pct"] > 0),
-    "hi_52w":         ("At / within 1% of 52-week high",   lambda x: x.get("from_hi_pct") is not None and x["from_hi_pct"] >= -1),
-    "golden_cross":   ("Golden cross (50>200) today",      lambda x: x.get("golden_cross")),
+    "wk1_hi":         ("1-week high breakout", "Price & Volume", lambda x: x.get("wk1_hi")),
+    "wk1_lo":         ("1-week low breakdown", "Price & Volume", lambda x: x.get("wk1_lo")),
+    "wk4_hi":         ("4-week high breakout", "Price & Volume", lambda x: x.get("wk4_hi")),
+    "wk4_lo":         ("4-week low breakdown", "Price & Volume", lambda x: x.get("wk4_lo")),
+    "nr7":            ("Narrow range day (NR7)", "Price & Volume", lambda x: x.get("nr7")),
+    # 52-Week Levels
+    "hi_52w":         ("At / within 1% of 52-week high", "52-Week", lambda x: x.get("from_hi_pct") is not None and x["from_hi_pct"] >= -1),
+    "lo_52w":         ("At / within 1% of 52-week low", "52-Week", lambda x: x.get("from_lo_pct") is not None and x["from_lo_pct"] <= 1),
+    "near5_hi":       ("Within 5% of 52-week high", "52-Week", lambda x: x.get("from_hi_pct") is not None and -5 <= x["from_hi_pct"] < -1),
+    "near5_lo":       ("Within 5% of 52-week low", "52-Week", lambda x: x.get("from_lo_pct") is not None and 1 < x["from_lo_pct"] <= 5),
+    # Pivot Levels (from previous session's pivots)
+    "x_r1": ("Crossed above Resistance R1", "Pivot Levels", lambda x: x.get("x_r1")),
+    "x_r2": ("Crossed above Resistance R2", "Pivot Levels", lambda x: x.get("x_r2")),
+    "x_r3": ("Crossed above Resistance R3", "Pivot Levels", lambda x: x.get("x_r3")),
+    "x_s1": ("Broke below Support S1", "Pivot Levels", lambda x: x.get("x_s1")),
+    "x_s2": ("Broke below Support S2", "Pivot Levels", lambda x: x.get("x_s2")),
+    "x_s3": ("Broke below Support S3", "Pivot Levels", lambda x: x.get("x_s3")),
+    # Candlestick Patterns
+    "bull_engulf":    ("Bullish Engulfing", "Candlestick", lambda x: "bull_engulf" in x.get("patterns", [])),
+    "bear_engulf":    ("Bearish Engulfing", "Candlestick", lambda x: "bear_engulf" in x.get("patterns", [])),
+    "hammer":         ("Hammer", "Candlestick", lambda x: "hammer" in x.get("patterns", [])),
+    "shooting_star":  ("Shooting Star", "Candlestick", lambda x: "shooting_star" in x.get("patterns", [])),
+    "piercing":       ("Piercing Line", "Candlestick", lambda x: "piercing" in x.get("patterns", [])),
+    "dark_cloud":     ("Dark Cloud Cover", "Candlestick", lambda x: "dark_cloud" in x.get("patterns", [])),
+    "three_soldiers": ("Three White Soldiers", "Candlestick", lambda x: "three_soldiers" in x.get("patterns", [])),
+    "three_crows":    ("Three Black Crows", "Candlestick", lambda x: "three_crows" in x.get("patterns", [])),
 }
 
 
@@ -522,7 +655,7 @@ def rebuild_outputs():
                "rsi": ind.get("rsi"), "vol_x": ind.get("vol_x"),
                "deliv": ind.get("deliv"), "ret_1m": ind.get("ret_1m")}
         universe.append(row)
-        for k, (_, fn) in SCAN_DEFS.items():
+        for k, (_, _cat, fn) in SCAN_DEFS.items():
             try:
                 if fn(ind):
                     scans[k].append(row)
@@ -543,7 +676,8 @@ def rebuild_outputs():
         }
     with open(os.path.join(DATA_DIR, "scans.json"), "w") as fh:
         json.dump({"asof": latest_date,
-                   "scans": [{"id": k, "name": SCAN_DEFS[k][0], "count": len(v), "rows": v[:100]}
+                   "scans": [{"id": k, "name": SCAN_DEFS[k][0], "cat": SCAN_DEFS[k][1],
+                              "count": len(v), "rows": v[:100]}
                              for k, v in scans.items()]}, fh, separators=(",", ":"))
     with open(os.path.join(DATA_DIR, "market.json"), "w") as fh:
         json.dump(market, fh, separators=(",", ":"))
@@ -565,6 +699,7 @@ def run_daily():
             idx = fetch_indices(d)
             if idx is not None:
                 append_indices(idx)
+                append_valuation(idx)
             fo = fetch_fii(d)
             if fo is not None:
                 append_fii(fo)
@@ -583,6 +718,7 @@ def run_daily():
             idx2 = fetch_indices(dd)
             if idx2 is not None:
                 append_indices(idx2)
+                append_valuation(idx2)
             if not os.environ.get("NSE_MOCK_DIR"):
                 time.sleep(0.5)
     # seed FII participant history for the long-short chart
@@ -599,6 +735,7 @@ def run_daily():
     build_indices_json()
     build_sectors_json()
     build_fii_json()
+    build_valuation_json()
     fetch_news()
     n, asof = rebuild_outputs()
     print(f"outputs rebuilt: {n} stocks, as of {asof}")
@@ -617,6 +754,7 @@ def run_backfill(days: int):
         idx = fetch_indices(d)
         if idx is not None:
             append_indices(idx)
+            append_valuation(idx)
         fo = fetch_fii(d)
         if fo is not None:
             append_fii(fo)
@@ -629,6 +767,7 @@ def run_backfill(days: int):
     build_indices_json()
     build_sectors_json()
     build_fii_json()
+    build_valuation_json()
     fetch_news()
     n, asof = rebuild_outputs()
     print(f"outputs rebuilt: {n} stocks, as of {asof}")
