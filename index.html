@@ -6,7 +6,7 @@
 <title>Market Intel — AI Market Research Platform</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet">
-<script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/lucide@0.454.0/dist/umd/lucide.min.js"></script>
 <style>
 :root{
@@ -203,6 +203,7 @@ var charts={},tab='home',curStock=null,curScan=null,chartRange='1Y',scanCat='All
 var NAV=[['home','home','Home'],['market','activity','Market Overview'],['stock','line-chart','Stock Page'],
 ['scanner','scan-search','Scanner'],['insights','lightbulb','Insights'],['news','newspaper','News']];
 var lwCharts=[];
+function chartFail(el){el.innerHTML='<div class="mut" style="font-size:12px;padding:14px;text-align:center">Chart library did not load — hard-refresh (Cmd/Ctrl+Shift+R). If it persists, your network may be blocking cdn.jsdelivr.net.</div>';}
 function lwc(el,opts){var ch=LightweightCharts.createChart(el,Object.assign({autoSize:true,
  layout:{background:{type:'solid',color:'transparent'},textColor:tk('--muted-foreground'),fontFamily:'Inter',fontSize:11},
  grid:{vertLines:{color:tka('--border',.3)},horzLines:{color:tka('--border',.3)}},
@@ -291,7 +292,9 @@ function fiiCard(){
 }
 function drawFii(){
  var el=document.getElementById('chF');
- if(!FII||!FII.series||FII.series.length<2||!el||!window.LightweightCharts)return;
+ if(!el)return;
+ if(!window.LightweightCharts){chartFail(el);return;}
+ if(!FII||!FII.series||FII.series.length<2)return;
  var ch=lwc(el);
  var hs=ch.addHistogramSeries({priceFormat:{type:'volume'}});
  hs.setData(FII.series.map(function(p){return {time:p.d,value:p.net,
@@ -485,6 +488,7 @@ function render(){
   function emaArr(arr,nn){var k=2/(nn+1),out=[],p=arr[0];arr.forEach(function(v,i){p=i?v*k+p*(1-k):v;out.push(+p.toFixed(2))});return out;}
   var e20=emaArr(d.c,20).slice(i0),e50=emaArr(d.c,50).slice(i0),e200=emaArr(d.c,200).slice(i0);
   var elP=document.getElementById('chP');
+  if(elP&&!window.LightweightCharts)chartFail(elP);
   if(elP&&window.LightweightCharts){
    var ch=lwc(elP);
    var cs=ch.addCandlestickSeries({upColor:tk('--positive'),downColor:tk('--negative'),
@@ -500,6 +504,7 @@ function render(){
    ch.timeScale().fitContent();
   }
   var elD=document.getElementById('chD');
+  if(elD&&!window.LightweightCharts)chartFail(elD);
   if(elD&&window.LightweightCharts){
    var chd=lwc(elD);
    var as=chd.addAreaSeries({lineColor:tk('--violet'),topColor:tka('--violet',.3),bottomColor:tka('--violet',.03),lineWidth:2,priceLineVisible:false});
@@ -536,6 +541,7 @@ function render(){
    +'</div>';
   c.innerHTML=h;
   var elI=document.getElementById('chI');
+  if(elI&&!window.LightweightCharts)chartFail(elI);
   if(elI&&window.LightweightCharts&&ds.c.length>1){
    var chI=lwc(elI);
    var hasOhlc=ds.o&&ds.h&&ds.l&&ds.o.some(function(v){return v!=null});
