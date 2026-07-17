@@ -313,7 +313,7 @@ function addPos(){var sym=document.getElementById('pSym').value.trim().toUpperCa
  setPort(p);render();}
 function rmPos(sym){setPort(getPort().filter(function(r){return r.sym!==sym}));render();}
 function loadPortRows(pf){
- Promise.all(pf.map(function(r){return fetch('data/stocks/'+r.sym+'.json').then(function(x){return x.ok?x.json():null}).catch(function(){return null})}))
+ Promise.all(pf.map(function(r){return fetch('data/stocks/'+encodeURIComponent(r.sym)+'.json').then(function(x){return x.ok?x.json():null}).catch(function(){return null})}))
  .then(function(all){
   var inv=0,cur=0,day=0;
   var h='<div style="overflow-x:auto"><table><tr><th>Symbol</th><th class="num">Qty</th><th class="num">Avg ₹</th><th class="num">LTP</th><th class="num">Invested</th><th class="num">Current</th><th class="num">P&L</th><th class="num">P&L%</th><th class="num">Day</th><th></th></tr>';
@@ -426,7 +426,7 @@ function render(){
   function retFrom(nn){return n2>nn?+(100*(d.c[n2-1]/d.c[n2-1-nn]-1)).toFixed(2):null;}
   var chipsDef=[['1D',x.chg_pct],['1W',retFrom(5)],['1M',retFrom(21)],['3M',retFrom(63)],['6M',retFrom(126)],['1Y',x.ret_1y]];
   // pivots + CPR from latest bar
-  var H=d.h[n2-1],L=d.l[n2-1],C=d.c[n2-1];
+  var H=d.h[n2-1]!=null?d.h[n2-1]:d.c[n2-1],L=d.l[n2-1]!=null?d.l[n2-1]:d.c[n2-1],C=d.c[n2-1];
   var P=(H+L+C)/3,BC=(H+L)/2,TC=2*P-BC;
   var R1=2*P-L,S1=2*P-H,R2=P+(H-L),S2=P-(H-L),R3=H+2*(P-L),S3=L-2*(H-P);
   // technical score
@@ -491,13 +491,14 @@ function render(){
   if(elP&&!window.LightweightCharts)chartFail(elP);
   if(elP&&window.LightweightCharts){
    var ch=lwc(elP);
+   var cRows=dd.map(function(t,i){return (oo[i]==null||hh[i]==null||ll[i]==null||cc[i]==null)?null:{time:t,open:oo[i],high:hh[i],low:ll[i],close:cc[i]}}).filter(Boolean);
    var cs=ch.addCandlestickSeries({upColor:tk('--positive'),downColor:tk('--negative'),
     wickUpColor:tk('--positive'),wickDownColor:tk('--negative'),borderVisible:false});
-   cs.setData(dd.map(function(t,i){return {time:t,open:oo[i],high:hh[i],low:ll[i],close:cc[i]}}));
+   cs.setData(cRows);
    var vs=ch.addHistogramSeries({priceFormat:{type:'volume'},priceScaleId:'vol'});
    ch.priceScale('vol').applyOptions({scaleMargins:{top:0.82,bottom:0}});
-   vs.setData(dd.map(function(t,i){return {time:t,value:vv[i],
-    color:i&&cc[i]>=cc[i-1]?tka('--positive',.45):tka('--negative',.45)}}));
+   vs.setData(dd.map(function(t,i){return vv[i]==null?null:{time:t,value:vv[i],
+    color:i&&cc[i]!=null&&cc[i-1]!=null&&cc[i]>=cc[i-1]?tka('--positive',.45):tka('--negative',.45)}}).filter(Boolean));
    [[e20,'--positive'],[e50,'--warning'],[e200,'--muted-foreground']].forEach(function(cfg){
     var ls=ch.addLineSeries({color:tk(cfg[1]),lineWidth:1,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
     ls.setData(dd.map(function(t,i){return {time:t,value:cfg[0][i]}}));});
@@ -508,7 +509,7 @@ function render(){
   if(elD&&window.LightweightCharts){
    var chd=lwc(elD);
    var as=chd.addAreaSeries({lineColor:tk('--violet'),topColor:tka('--violet',.3),bottomColor:tka('--violet',.03),lineWidth:2,priceLineVisible:false});
-   as.setData(dd.map(function(t,i){return {time:t,value:dl[i]}}));
+   as.setData(dd.map(function(t,i){return dl[i]==null?null:{time:t,value:dl[i]}}).filter(Boolean));
    chd.timeScale().fitContent();
   }
  }
@@ -645,7 +646,7 @@ function rmWatch(s){setWatch(getWatch().filter(function(x){return x!==s}));rende
 function toggleWatchSym(s){var w=getWatch();
  if(w.indexOf(s)>=0)setWatch(w.filter(function(x){return x!==s}));else{w.push(s);setWatch(w);}render();}
 function loadWatchRows(wl){
- Promise.all(wl.map(function(s){return fetch('data/stocks/'+s+'.json').then(function(r){return r.ok?r.json():null}).catch(function(){return null})}))
+ Promise.all(wl.map(function(s){return fetch('data/stocks/'+encodeURIComponent(s)+'.json').then(function(r){return r.ok?r.json():null}).catch(function(){return null})}))
  .then(function(all){
   var h='<div style="overflow-x:auto"><table><tr><th>Symbol</th><th class="num">Close</th><th class="num">Chg%</th><th class="num">RSI</th><th class="num">1M%</th><th class="num">From 52W Hi</th><th class="num">Deliv%</th><th>Trend</th><th></th></tr>';
   all.forEach(function(s,i){
@@ -670,7 +671,7 @@ function openIndex(label){
 
 // ------------------------------------------------ stock loading + search
 function openStock(sym){
- fetch('data/stocks/'+sym+'.json').then(function(r){if(!r.ok)throw 0;return r.json()})
+ fetch('data/stocks/'+encodeURIComponent(sym)+'.json').then(function(r){if(!r.ok)throw 0;return r.json()})
  .then(function(s){curStock=s;chartRange='1Y';go('stock');})
  .catch(function(){alert('No data for '+sym);});
 }
