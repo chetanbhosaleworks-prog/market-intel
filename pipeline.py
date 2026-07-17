@@ -341,8 +341,14 @@ def fetch_indices(d: date) -> pd.DataFrame | None:
     df["_N"] = df[name_c].map(lambda v: lut.get(norm(v)))
     df = df[df["_N"].notna()].copy()
     df["DATE"] = d.isoformat()
+    o_c = next((c for c in df.columns if c.lower().startswith("open index")), None)
+    h_c = next((c for c in df.columns if c.lower().startswith("high index")), None)
+    l_c = next((c for c in df.columns if c.lower().startswith("low index")), None)
     cols = {"_N": "NAME", close_c: "CLOSE"}
     keep_c = ["_N", close_c, "DATE"]
+    for src, dst in ((o_c, "OPEN"), (h_c, "HIGH"), (l_c, "LOW")):
+        if src:
+            cols[src] = dst; keep_c.insert(2, src)
     if pe_c:
         cols[pe_c] = "PE"; keep_c.insert(2, pe_c)
     if pb_c:
@@ -368,7 +374,11 @@ def append_indices(day_df: pd.DataFrame):
 def _append_one_index(hist_dir, label, r):
     key = label.replace(" ", "_").replace("&", "and")
     p = os.path.join(hist_dir, key + ".csv")
-    row = pd.DataFrame([{"DATE": r["DATE"], "CLOSE": float(r["CLOSE"])}])
+    rec = {"DATE": r["DATE"], "CLOSE": float(r["CLOSE"])}
+    for c in ("OPEN", "HIGH", "LOW"):
+        if c in r.index and not pd.isna(r[c]):
+            rec[c] = float(r[c])
+    row = pd.DataFrame([rec])
     if os.path.exists(p):
         h = pd.read_csv(p)
         if r["DATE"] in set(h["DATE"]):
@@ -376,7 +386,7 @@ def _append_one_index(hist_dir, label, r):
         h = pd.concat([h, row], ignore_index=True)
     else:
         h = row
-    h.sort_values("DATE").tail(80).to_csv(p, index=False)
+    h.sort_values("DATE").tail(420).to_csv(p, index=False)
 
 def build_indices_json():
     out = []
@@ -459,6 +469,148 @@ def build_sectors_json():
     out.sort(key=lambda r: -r["chg_pct"])
     with open(os.path.join(DATA_DIR, "sectors.json"), "w") as fh:
         json.dump(out, fh, separators=(",", ":"))
+
+EQ_MASTER_URL = "https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv"
+N50_URL = "https://nsearchives.nseindia.com/content/indices/ind_nifty50list.csv"
+
+def _fetch_csv(url, mock_name):
+    mock_dir = os.environ.get("NSE_MOCK_DIR")
+    if mock_dir:
+        p = os.path.join(mock_dir, mock_name)
+        if not os.path.exists(p):
+            return None
+        return open(p, "rb").read()
+    for attempt in range(3):
+        try:
+            r = requests.get(url, headers=UA, timeout=30)
+            if r.status_code == 200 and len(r.content) > 200:
+                return r.content
+            if r.status_code == 404:
+                return None
+        except requests.RequestException:
+            pass
+        time.sleep(2 * (attempt + 1))
+    return None
+
+def build_names_json():
+    raw = _fetch_csv(EQ_MASTER_URL, "EQUITY_L.csv")
+    if raw is None:
+        return
+    try:
+        df = pd.read_csv(io.BytesIO(raw))
+        df.columns = [c.strip() for c in df.columns]
+        sym_c = next((c for c in df.columns if c.upper() == "SYMBOL"), None)
+        nm_c = next((c for c in df.columns if "NAME OF COMPANY" in c.upper()), None)
+        if not sym_c or not nm_c:
+            return
+        out = {str(r[sym_c]).strip(): str(r[nm_c]).strip()
+               for _, r in df.iterrows() if str(r[sym_c]).strip()}
+        with open(os.path.join(DATA_DIR, "names.json"), "w") as fh:
+            json.dump(out, fh, separators=(",", ":"))
+        print(f"names master: {len(out)} companies")
+    except Exception as e:
+        print(f"names master skipped: {type(e).__name__}")
+
+def build_n50_map():
+    raw = _fetch_csv(N50_URL, "ind_nifty50list.csv")
+    syms = []
+    if raw is not None:
+        try:
+            df = pd.read_csv(io.BytesIO(raw))
+            df.columns = [c.strip() for c in df.columns]
+            sc = next((c for c in df.columns if c.upper() == "SYMBOL"), None)
+            if sc:
+                syms = [str(x).strip() for x in df[sc].tolist()]
+        except Exception:
+            pass
+    if not syms:
+        return
+    with open(os.path.join(DATA_DIR, "constituents.json"), "w") as fh:
+        json.dump({"NIFTY 50": syms}, fh, separators=(",", ":"))
+    rows = []
+    for sym in syms:
+        p = os.path.join(HIST_DIR, f"{sym}.csv")
+        if not os.path.exists(p):
+            continue
+        h = pd.read_csv(p).tail(2)
+        if len(h) < 2:
+            continue
+        c, pv = float(h["CLOSE_PRICE"].iloc[-1]), float(h["CLOSE_PRICE"].iloc[-2])
+        rows.append({"symbol": sym, "close": round(c, 2),
+                     "chg": round((c / pv - 1) * 100, 2)})
+    with open(os.path.join(DATA_DIR, "n50map.json"), "w") as fh:
+        json.dump(sorted(rows, key=lambda r: -r["chg"]), fh, separators=(",", ":"))
+    print(f"nifty50 map: {len(rows)} stocks")
+
+def build_holidays_json():
+    p = os.path.join(IDX_HIST, "NIFTY_50.csv")
+    if not os.path.exists(p):
+        return
+    h = pd.read_csv(p)
+    have = set(h["DATE"])
+    if len(have) < 10:
+        return
+    dts = sorted(have)
+    start = datetime.strptime(dts[0], "%Y-%m-%d").date()
+    end = datetime.strptime(dts[-1], "%Y-%m-%d").date()
+    closed = []
+    d = start
+    while d <= end:
+        if d.weekday() < 5 and d.isoformat() not in have:
+            closed.append(d.isoformat())
+        d += timedelta(days=1)
+    with open(os.path.join(DATA_DIR, "holidays.json"), "w") as fh:
+        json.dump({"observed_closures": closed[-25:],
+                   "note": "Weekdays with no NSE trading data in our records — observed market closures."},
+                  fh, separators=(",", ":"))
+
+IDXPAGE_DIR = os.path.join(DATA_DIR, "indexpages")
+
+def build_index_pages():
+    os.makedirs(IDXPAGE_DIR, exist_ok=True)
+    for name, label in IDX_WANT.items():
+        p = os.path.join(IDX_HIST, label.replace(" ", "_").replace("&", "and") + ".csv")
+        if not os.path.exists(p):
+            continue
+        h = pd.read_csv(p)
+        if len(h) < 5:
+            continue
+        c = h["CLOSE"]
+        x = {"close": round(float(c.iloc[-1]), 2),
+             "prev_close": round(float(c.iloc[-2]), 2)}
+        x["chg_pct"] = round((x["close"] / x["prev_close"] - 1) * 100, 2) if x["prev_close"] else 0.0
+        for n in (20, 50, 200):
+            if len(c) >= n:
+                x[f"ema{n}"] = round(float(ema(c, n).iloc[-1]), 2)
+        r = rsi(c)
+        x["rsi"] = round(float(r.iloc[-1]), 1) if len(c) > 15 and not np.isnan(r.iloc[-1]) else None
+        for k, n in {"ret_1w": 5, "ret_1m": 21, "ret_3m": 63, "ret_1y": 252}.items():
+            if len(c) > n:
+                x[k] = round((c.iloc[-1] / c.iloc[-1 - n] - 1) * 100, 1)
+        hi_src = h["HIGH"] if "HIGH" in h.columns and h["HIGH"].notna().sum() > 5 else c
+        lo_src = h["LOW"] if "LOW" in h.columns and h["LOW"].notna().sum() > 5 else c
+        w = min(len(h), 252)
+        x["hi_52w"] = round(float(hi_src.tail(w).max()), 2)
+        x["lo_52w"] = round(float(lo_src.tail(w).min()), 2)
+        x["hi_1m"] = round(float(hi_src.tail(21).max()), 2)
+        x["lo_1m"] = round(float(lo_src.tail(21).min()), 2)
+        x["hi_1w"] = round(float(hi_src.tail(5).max()), 2)
+        x["lo_1w"] = round(float(lo_src.tail(5).min()), 2)
+        x["from_hi_pct"] = round((x["close"] / x["hi_52w"] - 1) * 100, 1)
+        x["from_lo_pct"] = round((x["close"] / x["lo_52w"] - 1) * 100, 1)
+        bulls = sum([1 if x.get("ema20") and x["close"] > x["ema20"] else 0,
+                     1 if x.get("ema50") and x["close"] > x["ema50"] else 0,
+                     1 if x.get("ema200") and x["close"] > x["ema200"] else 0,
+                     1 if (x.get("rsi") or 0) > 50 else 0])
+        x["verdict"] = "Bullish" if bulls >= 3 else "Bearish" if bulls <= 1 else "Mixed"
+        tail = h.tail(260)
+        series = {"date": tail["DATE"].tolist(), "c": tail["CLOSE"].round(2).tolist()}
+        for col, k in (("OPEN", "o"), ("HIGH", "h"), ("LOW", "l")):
+            if col in tail.columns and tail[col].notna().sum() > 0:
+                series[k] = [None if pd.isna(v) else round(float(v), 2) for v in tail[col]]
+        with open(os.path.join(IDXPAGE_DIR, label.replace(" ", "_").replace("&", "and") + ".json"), "w") as fh:
+            json.dump({"label": label, "asof": h["DATE"].iloc[-1], "ind": x, "series": series},
+                      fh, separators=(",", ":"))
 
 # ---------------------------------------------------------------- FII / participant-wise F&O OI
 FII_URL = "https://nsearchives.nseindia.com/content/nsccl/fao_participant_oi_{d}.csv"
@@ -736,6 +888,10 @@ def run_daily():
     build_sectors_json()
     build_fii_json()
     build_valuation_json()
+    build_names_json()
+    build_n50_map()
+    build_holidays_json()
+    build_index_pages()
     fetch_news()
     n, asof = rebuild_outputs()
     print(f"outputs rebuilt: {n} stocks, as of {asof}")
@@ -768,6 +924,10 @@ def run_backfill(days: int):
     build_sectors_json()
     build_fii_json()
     build_valuation_json()
+    build_names_json()
+    build_n50_map()
+    build_holidays_json()
+    build_index_pages()
     fetch_news()
     n, asof = rebuild_outputs()
     print(f"outputs rebuilt: {n} stocks, as of {asof}")
