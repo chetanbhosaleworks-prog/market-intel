@@ -797,15 +797,26 @@ def rebuild_outputs():
             continue
         latest_date = max(latest_date or "", hist["DATE"].iloc[-1])
         ind["narrative"] = narrative(sym, ind)
+        for k2, v2 in list(ind.items()):
+            if isinstance(v2, float) and v2 != v2:      # NaN -> null
+                ind[k2] = None
         tail = hist.tail(260)
+        def _col(vals, nd=2, as_int=False):
+            out2 = []
+            for v3 in vals:
+                if pd.isna(v3):
+                    out2.append(None)
+                else:
+                    out2.append(int(v3) if as_int else round(float(v3), nd))
+            return out2
         payload = {"symbol": sym, "asof": hist["DATE"].iloc[-1], "ind": ind,
                    "series": {"date": tail["DATE"].tolist(),
-                              "o": tail["OPEN_PRICE"].round(2).tolist(),
-                              "h": tail["HIGH_PRICE"].round(2).tolist(),
-                              "l": tail["LOW_PRICE"].round(2).tolist(),
-                              "c": tail["CLOSE_PRICE"].round(2).tolist(),
-                              "v": tail["TTL_TRD_QNTY"].astype(int).tolist(),
-                              "dlv": tail["DELIV_PER"].round(1).fillna(0).tolist()}}
+                              "o": _col(tail["OPEN_PRICE"]),
+                              "h": _col(tail["HIGH_PRICE"]),
+                              "l": _col(tail["LOW_PRICE"]),
+                              "c": _col(tail["CLOSE_PRICE"]),
+                              "v": _col(tail["TTL_TRD_QNTY"], as_int=True),
+                              "dlv": _col(tail["DELIV_PER"], nd=1)}}
         with open(os.path.join(STOCK_DIR, f"{sym}.json"), "w") as fh:
             json.dump(payload, fh, separators=(",", ":"))
         row = {"symbol": sym, "close": ind["close"], "chg": ind["chg_pct"],
