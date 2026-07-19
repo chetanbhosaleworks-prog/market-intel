@@ -180,9 +180,10 @@ def compute_indicators(hist: pd.DataFrame) -> dict | None:
     out["from_hi_pct"] = round((out["close"] / out["hi_52w"] - 1) * 100, 1)
     out["from_lo_pct"] = round((out["close"] / out["lo_52w"] - 1) * 100, 1)
     v = hist["TTL_TRD_QNTY"]
-    out["vol"] = int(v.iloc[-1])
-    out["vol_avg20"] = int(v.tail(21).head(20).mean()) if len(v) > 20 else int(v.mean())
-    out["vol_x"] = round(out["vol"] / out["vol_avg20"], 2) if out["vol_avg20"] else None
+    out["vol"] = int(v.iloc[-1]) if not pd.isna(v.iloc[-1]) else None
+    _va = v.tail(21).head(20).mean() if len(v) > 20 else v.mean()
+    out["vol_avg20"] = int(_va) if not pd.isna(_va) else None
+    out["vol_x"] = round(out["vol"] / out["vol_avg20"], 2) if out["vol"] and out["vol_avg20"] else None
     dl = hist["DELIV_PER"].dropna()
     if len(dl) >= 21:
         out["deliv"] = round(float(dl.iloc[-1]), 1)
@@ -791,8 +792,12 @@ def rebuild_outputs():
         if not f.endswith(".csv"):
             continue
         sym = f[:-4]
-        hist = pd.read_csv(os.path.join(HIST_DIR, f))
-        ind = compute_indicators(hist)
+        try:
+            hist = pd.read_csv(os.path.join(HIST_DIR, f))
+            ind = compute_indicators(hist)
+        except Exception as e:
+            print(f"skip {sym}: {type(e).__name__}")
+            continue
         if ind is None:
             continue
         latest_date = max(latest_date or "", hist["DATE"].iloc[-1])
@@ -817,8 +822,12 @@ def rebuild_outputs():
                               "c": _col(tail["CLOSE_PRICE"]),
                               "v": _col(tail["TTL_TRD_QNTY"], as_int=True),
                               "dlv": _col(tail["DELIV_PER"], nd=1)}}
-        with open(os.path.join(STOCK_DIR, f"{sym}.json"), "w") as fh:
-            json.dump(payload, fh, separators=(",", ":"))
+        try:
+            with open(os.path.join(STOCK_DIR, f"{sym}.json"), "w") as fh:
+                json.dump(payload, fh, separators=(",", ":"))
+        except Exception as e:
+            print(f"skip write {sym}: {type(e).__name__}")
+            continue
         row = {"symbol": sym, "close": ind["close"], "chg": ind["chg_pct"],
                "rsi": ind.get("rsi"), "vol_x": ind.get("vol_x"),
                "deliv": ind.get("deliv"), "ret_1m": ind.get("ret_1m")}
