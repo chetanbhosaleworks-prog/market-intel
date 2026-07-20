@@ -548,6 +548,42 @@ def build_n50_map():
         json.dump(sorted(rows, key=lambda r: -r["chg"]), fh, separators=(",", ":"))
     print(f"nifty50 map: {len(rows)} stocks")
 
+ANGEL_SCRIP_URL = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
+
+def build_tokens_json():
+    out_p = os.path.join(DATA_DIR, "tokens.json")
+    if os.path.exists(out_p) and date.today().weekday() != 0:   # refresh Mondays
+        return
+    mock_dir = os.environ.get("NSE_MOCK_DIR")
+    try:
+        if mock_dir:
+            raw = open(os.path.join(mock_dir, "scripmaster.json"), "rb").read()
+        else:
+            r = requests.get(ANGEL_SCRIP_URL, headers=UA, timeout=60)
+            if r.status_code != 200:
+                print("scrip master unavailable:", r.status_code)
+                return
+            raw = r.content
+        rows = json.loads(raw)
+        have = set()
+        if os.path.isdir(HIST_DIR):
+            have = {f[:-4] for f in os.listdir(HIST_DIR) if f.endswith(".csv")}
+        out = {}
+        for r2 in rows:
+            try:
+                if r2.get("exch_seg") == "NSE" and str(r2.get("symbol", "")).endswith("-EQ"):
+                    sym = str(r2["symbol"])[:-3]
+                    if not have or sym in have:
+                        out[sym] = str(r2["token"])
+            except Exception:
+                continue
+        if out:
+            with open(out_p, "w") as fh:
+                json.dump(out, fh, separators=(",", ":"))
+            print(f"tokens: {len(out)} symbols mapped")
+    except Exception as e:
+        print(f"tokens skipped: {type(e).__name__}")
+
 def build_holidays_json():
     p = os.path.join(IDX_HIST, "NIFTY_50.csv")
     if not os.path.exists(p):
@@ -914,6 +950,7 @@ def run_daily():
     build_fii_json()
     build_valuation_json()
     build_names_json()
+    build_tokens_json()
     build_n50_map()
     build_holidays_json()
     build_index_pages()
@@ -950,6 +987,7 @@ def run_backfill(days: int):
     build_fii_json()
     build_valuation_json()
     build_names_json()
+    build_tokens_json()
     build_n50_map()
     build_holidays_json()
     build_index_pages()
