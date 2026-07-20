@@ -211,7 +211,7 @@ function lwc(el,opts){var ch=LightweightCharts.createChart(el,Object.assign({aut
  timeScale:{borderColor:tka('--border',.6)},crosshair:{mode:0}},opts||{}));
  lwCharts.push(ch);return ch;}
 function cssTok(n){return getComputedStyle(document.documentElement).getPropertyValue(n).trim();}
-function tk(n){return 'hsl('+cssTok(n)+')';}
+function tk(n){return 'hsl('+cssTok(n).split(/\s+/).join(',')+')';}
 function tka(n,a){var p=cssTok(n).split(/\s+/);return 'hsla('+p[0]+','+p[1]+','+p[2]+','+a+')';}
 function icon(n,c){return '<i data-lucide="'+n+'" class="'+(c||'ic')+'"></i>';}
 function refreshIcons(){if(window.lucide)lucide.createIcons();}
