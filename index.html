@@ -166,6 +166,7 @@ display:inline-flex;align-items:center;gap:7px;background:hsl(var(--card));color
   <div id="tright">
     <div class="searchWrap"><i data-lucide="search" class="ic"></i>
       <input id="search" placeholder="Search stocks…" autocomplete="off"><div class="sugg" id="sugg"></div></div>
+    <span id="livePill" class="badge b-neu" style="cursor:pointer;display:none" onclick="openBroker()">EOD</span>
     <button class="iconbtn" onclick="go('portfolio')" title="Portfolio"><i data-lucide="briefcase" class="ic"></i></button>
     <button class="iconbtn" onclick="go('watch')" title="Watchlist"><i data-lucide="star" class="ic"></i><span class="dot" id="wdot" style="display:none"></span></button>
     <div style="position:relative">
@@ -187,10 +188,12 @@ display:inline-flex;align-items:center;gap:7px;background:hsl(var(--card));color
   <div style="font-weight:800;font-size:15px;margin-bottom:6px">Broker connection — Angel One</div>
   <div class="mut" style="font-size:12px;line-height:1.8;margin-bottom:14px">Stored <b>only in this browser</b> — never uploaded anywhere, never in the code. Live quotes wiring ships in the next build; saving now just keeps you ready.</div>
   <input id="bkKey" placeholder="SmartAPI Key" style="width:100%;margin-bottom:9px;background:hsl(var(--secondary));border:1px solid hsl(var(--input));color:hsl(var(--foreground));border-radius:10px;padding:10px 13px;font-family:Inter;outline:none">
-  <input id="bkClient" placeholder="Client Code" style="width:100%;margin-bottom:14px;background:hsl(var(--secondary));border:1px solid hsl(var(--input));color:hsl(var(--foreground));border-radius:10px;padding:10px 13px;font-family:Inter;outline:none">
+  <input id="bkClient" placeholder="Client Code" style="width:100%;margin-bottom:9px;background:hsl(var(--secondary));border:1px solid hsl(var(--input));color:hsl(var(--foreground));border-radius:10px;padding:10px 13px;font-family:Inter;outline:none">
+  <input id="bkFeed" placeholder="Feed Token (from login_helper.py — new one each morning)" style="width:100%;margin-bottom:14px;background:hsl(var(--secondary));border:1px solid hsl(var(--input));color:hsl(var(--foreground));border-radius:10px;padding:10px 13px;font-family:Inter;outline:none">
   <div style="display:flex;gap:9px;justify-content:flex-end">
    <button class="pill" onclick="clearBroker()">Clear</button>
    <button class="pill" style="background:hsl(var(--primary));color:hsl(var(--primary-foreground));border-color:transparent" onclick="saveBroker()">Save on this device</button>
+   <button class="pill" id="liveBtn" onclick="toggleLive()">Connect Live</button>
   </div>
   <div id="bkStatus" class="mut" style="font-size:11.5px;margin-top:10px"></div>
  </div>
@@ -662,7 +665,7 @@ function loadWatchRows(wl){
    if(!s){h+='<tr><td class="sym">'+wl[i]+'</td><td colspan="8" class="mut">no data</td></tr>';return;}
    var x=s.ind;
    h+='<tr class="click" onclick="openStock(\''+s.symbol+'\')"><td class="sym">'+s.symbol+'</td>'
-    +'<td class="num">₹'+fmtN(x.close)+'</td><td class="num '+chgCls(x.chg_pct)+'">'+chgTxt(x.chg_pct)+'</td>'
+    +'<td class="num" id="lv_'+s.symbol.replace(/[^A-Z0-9]/g,'')+'">₹'+fmtN(x.close)+'</td><td class="num '+chgCls(x.chg_pct)+'">'+chgTxt(x.chg_pct)+'</td>'
     +'<td class="num">'+(x.rsi==null?'—':x.rsi)+'</td><td class="num '+chgCls(x.ret_1m)+'">'+(x.ret_1m==null?'—':chgTxt(x.ret_1m))+'</td>'
     +'<td class="num">'+x.from_hi_pct+'%</td><td class="num">'+(x.deliv==null?'—':x.deliv+'%')+'</td>'
     +'<td><span class="badge '+(x.st_dir===1?'b-pos':'b-neg')+'">'+(x.st_dir===1?'Bullish':'Bearish')+'</span></td>'
@@ -687,6 +690,7 @@ function openIndex(label){
 
 // ------------------------------------------------ stock loading + search
 function openStock(sym){
+ setTimeout(function(){if(LIVE.on)subscribeWatch();},400);
  fetch('data/stocks/'+encodeURIComponent(sym)+'.json')
  .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
  .then(function(s){
@@ -726,24 +730,103 @@ function suggPick(s,inputId,suggId){
 function openBroker(){var m=document.getElementById('brokerModal');m.style.display='flex';
  try{var b=JSON.parse(localStorage.getItem('broker')||'null');
   if(b){document.getElementById('bkKey').value=b.key||'';document.getElementById('bkClient').value=b.client||'';
+   document.getElementById('bkFeed').value=b.feed||'';
    document.getElementById('bkStatus').textContent='Saved on this device · ready for the live-data build.';}}catch(e){}}
 function closeBroker(){document.getElementById('brokerModal').style.display='none';}
-function saveBroker(){var k=document.getElementById('bkKey').value.trim(),c2=document.getElementById('bkClient').value.trim();
- if(!k||!c2){document.getElementById('bkStatus').textContent='Enter both fields.';return;}
- localStorage.setItem('broker',JSON.stringify({key:k,client:c2,broker:'angelone'}));
- document.getElementById('bkStatus').textContent='Saved on this device · ready for the live-data build.';}
+function saveBroker(){var k=document.getElementById('bkKey').value.trim(),c2=document.getElementById('bkClient').value.trim(),
+ ft=document.getElementById('bkFeed').value.trim();
+ if(!k||!c2){document.getElementById('bkStatus').textContent='Enter API key and client code.';return;}
+ localStorage.setItem('broker',JSON.stringify({key:k,client:c2,feed:ft,broker:'angelone'}));
+ document.getElementById('bkStatus').textContent=ft?'Saved · press Connect Live.':'Saved · add today\'s Feed Token to go live.';}
 function clearBroker(){localStorage.removeItem('broker');
  document.getElementById('bkKey').value='';document.getElementById('bkClient').value='';
  document.getElementById('bkStatus').textContent='Cleared.';}
+
+// ------------------------------------------------ live data (Angel One websocket)
+var LIVE={ws:null,on:false,ticks:{},hb:null,tokens:null,rev:{}};
+function liveSupported(){var b=null;try{b=JSON.parse(localStorage.getItem('broker')||'null')}catch(e){}
+ return b&&b.key&&b.client&&b.feed?b:null;}
+function parseTick(buf){
+ try{
+  var dv=new DataView(buf);
+  var mode=dv.getInt8(0);
+  var tok='';
+  for(var i=2;i<27;i++){var ch=dv.getUint8(i);if(ch)tok+=String.fromCharCode(ch);}
+  var ltp=Number(dv.getBigInt64(43,true))/100;
+  return {token:tok,ltp:ltp,mode:mode};
+ }catch(e){return null;}
+}
+function applyTick(t){
+ var sym=LIVE.rev[t.token];
+ if(!sym)return;
+ LIVE.ticks[sym]=t.ltp;
+ // stock page header
+ if(tab==='stock'&&curStock&&curStock.symbol===sym){
+  var el=document.getElementById('livePx');
+  if(el){el.textContent='₹'+fmtN(t.ltp);
+   var base=curStock.ind.close,ch=base?(t.ltp/base-1)*100:0;
+   var ce=document.getElementById('liveChg');
+   if(ce){ce.textContent=chgTxt(ch)+' live';ce.className=chgCls(ch);}}
+ }
+ // watchlist rows
+ var lr=document.getElementById('lv_'+sym.replace(/[^A-Z0-9]/g,''));
+ if(lr)lr.textContent='₹'+fmtN(t.ltp);
+}
+function setLiveState(on,msg){
+ LIVE.on=on;
+ var p=document.getElementById('livePill');
+ if(p){p.style.display='inline-block';
+  p.textContent=on?'LIVE':'EOD';
+  p.className='badge '+(on?'b-pos':'b-neu');}
+ var st=document.getElementById('bkStatus');
+ if(st&&msg)st.textContent=msg;
+ var lb=document.getElementById('liveBtn');
+ if(lb)lb.textContent=on?'Disconnect':'Connect Live';
+}
+function subscribeWatch(){
+ if(!LIVE.ws||LIVE.ws.readyState!==1||!LIVE.tokens)return;
+ var syms=getWatch().slice();
+ if(curStock)syms.push(curStock.symbol);
+ var toks=[];LIVE.rev={};
+ syms.forEach(function(sy){var t2=LIVE.tokens[sy];if(t2){toks.push(t2);LIVE.rev[t2]=sy;}});
+ if(!toks.length)return;
+ LIVE.ws.send(JSON.stringify({correlationID:'mi',action:1,
+  params:{mode:1,tokenList:[{exchangeType:1,tokens:toks}]}}));
+}
+function toggleLive(){
+ if(LIVE.on){if(LIVE.ws)LIVE.ws.close();return;}
+ var b=liveSupported();
+ if(!b){setLiveState(false,'Save API key, client code AND today\'s feed token first.');return;}
+ if(!LIVE.tokens){setLiveState(false,'Token map not loaded yet — run the daily pipeline once, then retry.');return;}
+ setLiveState(false,'Connecting to Angel One…');
+ try{
+  var url='wss://smartapisocket.angelone.in/smart-stream?clientCode='+encodeURIComponent(b.client)
+   +'&feedToken='+encodeURIComponent(b.feed)+'&apiKey='+encodeURIComponent(b.key);
+  var ws=new WebSocket(url);
+  ws.binaryType='arraybuffer';
+  LIVE.ws=ws;
+  ws.onopen=function(){setLiveState(true,'Connected — streaming your watchlist + open stock.');
+   subscribeWatch();
+   LIVE.hb=setInterval(function(){try{ws.send('ping')}catch(e){}},25000);};
+  ws.onmessage=function(ev){
+   if(typeof ev.data==='string')return;   // pong / control
+   var t=parseTick(ev.data);
+   if(t&&t.ltp>0)applyTick(t);};
+  ws.onerror=function(){setLiveState(false,'Connection failed. Likely causes: feed token expired (run login_helper again) or Angel blocks browser connections — tell Claude exactly this message.');};
+  ws.onclose=function(){clearInterval(LIVE.hb);
+   setLiveState(false,LIVE.on?'Disconnected.':undefined);LIVE.ws=null;};
+ }catch(e){setLiveState(false,'Could not open connection: '+e.message);}
+}
 
 // ------------------------------------------------ boot
 function j(p){return fetch(p).then(function(r){return r.ok?r.json():null}).catch(function(){return null});}
 Promise.all([j('data/market.json'),j('data/scans.json'),j('data/symbols.json'),j('data/meta.json'),
              j('data/indices.json'),j('data/news.json'),j('data/sectors.json'),j('data/fii.json'),j('data/valuation.json'),
-             j('data/names.json'),j('data/n50map.json'),j('data/holidays.json')])
+             j('data/names.json'),j('data/n50map.json'),j('data/holidays.json'),j('data/tokens.json')])
 .then(function(res){
  MARKET=res[0];SCANS=res[1];SYMBOLS=res[2]||[];META=res[3];INDICES=res[4]||[];NEWS=res[5];SECTORS=res[6]||[];FII=res[7];VAL=res[8];
- NAMES=res[9]||{};N50=res[10]||[];HOLI=res[11];
+ NAMES=res[9]||{};N50=res[10]||[];HOLI=res[11];LIVE.tokens=res[12]||null;
+ if(liveSupported()){var p2=document.getElementById('livePill');if(p2)p2.style.display='inline-block';}
  if(!MARKET||!META)throw 0;
  curScan=SCANS.scans.length?SCANS.scans[0].id:null;
  document.getElementById('loader').style.display='none';
