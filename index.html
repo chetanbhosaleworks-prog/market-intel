@@ -664,16 +664,30 @@ function loadWatchRows(wl){
 
 function openIndex(label){
  var key=label.replace(/ /g,'_').replace(/&/g,'and');
- fetch('data/indexpages/'+key+'.json').then(function(r){if(!r.ok)throw 0;return r.json()})
- .then(function(ix){curIndex=ix;tab='index';nav();render();document.getElementById('content').scrollTop=0;})
- .catch(function(){alert('Index page data for '+label+' builds after the next daily run.');});
+ fetch('data/indexpages/'+key+'.json')
+ .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
+ .then(function(ix){
+   curIndex=ix;
+   try{tab='index';nav();render();document.getElementById('content').scrollTop=0;}
+   catch(err){console.error('render error',err);
+     alert('RENDER ERROR on '+label+': '+(err&&err.message?err.message:err));}
+ })
+ .catch(function(err){console.error('load error',err);
+   alert('LOAD ERROR for '+label+': '+(err&&err.message?err.message:'fetch/parse failed'));});
 }
 
 // ------------------------------------------------ stock loading + search
 function openStock(sym){
- fetch('data/stocks/'+encodeURIComponent(sym)+'.json').then(function(r){if(!r.ok)throw 0;return r.json()})
- .then(function(s){curStock=s;chartRange='1Y';go('stock');})
- .catch(function(){alert('No data for '+sym);});
+ fetch('data/stocks/'+encodeURIComponent(sym)+'.json')
+ .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
+ .then(function(s){
+   curStock=s;chartRange='1Y';
+   try{go('stock');}
+   catch(err){console.error('render error',err);
+     alert('RENDER ERROR on '+sym+': '+(err&&err.message?err.message:err));}
+ })
+ .catch(function(err){console.error('load error',err);
+   alert('LOAD ERROR for '+sym+': '+(err&&err.message?err.message:'fetch/parse failed'));});
 }
 function bindSearch(inputId,suggId){
  var inp=document.getElementById(inputId),sg=document.getElementById(suggId);
